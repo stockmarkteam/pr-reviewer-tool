@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRレビュアールーレット</title>
+<style>
+:root{
+  --bg:#f7f7f5; --card:#ffffff; --text:#1f1f1e; --sub:#6f6f6a; --line:#e0e0dc;
+  --accent:#185FA5; --accent-text:#ffffff; --tint:#e6f1fb; --danger:#a32d2d;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#191919; --card:#242424; --text:#ececea; --sub:#a3a39e; --line:#3c3c3a;
+         --accent:#2f7bc4; --accent-text:#ffffff; --tint:#123a5e; --danger:#e08585; }
+}
+*{ box-sizing:border-box }
+body{ margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+      font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",Meiryo,sans-serif }
+.wrap{ max-width:720px; margin:0 auto; padding:12px }
+h1{ font-size:16px; font-weight:600; margin:4px 0 10px; display:flex; align-items:center; gap:8px }
+h1 small{ font-size:11px; font-weight:400; color:var(--sub) }
+.step{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px }
+.step-h{ display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap }
+.step-n{ width:20px; height:20px; border-radius:50%; background:var(--tint); color:var(--accent);
+         font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; flex:none }
+@media (prefers-color-scheme: dark){ .step-n{ color:#bcd9f5 } }
+.step-t{ font-weight:600 }
+.cap{ font-size:12px; color:var(--sub) }
+textarea{ width:100%; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text);
+          font-family:ui-monospace,Menlo,monospace; font-size:12px; padding:8px; resize:vertical }
+select,input[type=text]{ border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text);
+          font-size:14px; padding:7px 8px }
+select{ width:100% }
+button{ border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text);
+        font-size:13px; padding:7px 12px; cursor:pointer }
+button:hover{ background:var(--bg) }
+button:disabled{ opacity:.45; cursor:not-allowed }
+button.primary{ background:var(--accent); color:var(--accent-text); border-color:var(--accent); font-size:15px }
+.member{ display:flex; align-items:center; gap:8px; padding:5px 8px; border:1px solid var(--line);
+         border-radius:8px; background:var(--bg); margin-bottom:5px }
+.member input[type=checkbox]{ width:16px; height:16px; flex:none }
+.dot{ width:8px; height:8px; border-radius:50%; display:inline-block; flex:none }
+.badge{ font-size:11px; color:var(--sub); border:1px solid var(--line); border-radius:20px; padding:0 8px; flex:none }
+.warn{ font-size:12px; color:var(--danger); margin-top:6px }
+.chip{ font-size:12px; padding:3px 10px; border-radius:20px; margin:2px }
+.wheel-wrap{ position:relative; width:min(260px,80vw); margin:0 auto }
+.wheel-rot{ transition:transform 4s cubic-bezier(.17,.67,.12,.99); transform-origin:50% 50% }
+.pointer{ position:absolute; top:-2px; left:50%; transform:translateX(-50%); width:0; height:0; z-index:2;
+          border-left:9px solid transparent; border-right:9px solid transparent; border-top:14px solid var(--text) }
+.result{ margin-top:10px; min-height:46px; display:flex; align-items:center; justify-content:center; gap:10px;
+         border:1px dashed var(--line); border-radius:8px; color:var(--sub); padding:8px; text-align:center; flex-wrap:wrap }
+.result strong{ font-size:18px; color:var(--text) }
+.hist{ font-size:12px; color:var(--sub); margin-top:8px }
+footer{ font-size:11px; color:var(--sub); margin:14px 4px 8px }
+details{ margin-bottom:10px } summary{ cursor:pointer; font-size:12px; color:var(--sub) }
+details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PRレビュアールーレット <small>負荷が少ない人ほど当たりやすい抽選</small></h1>
+  <details>
+    <summary>使い方（クリックで開く）</summary>
+    <p>① NotionのPR表を範囲選択してコピーし、下の欄に貼り付けて「読み込み」（会議冒頭に1回）。<br>
+       ② 「Ready for review」でレビュアー未記入のPRが一覧に出るので1件選ぶ（作成者は自動で除外）。<br>
+       ③ 休暇の人・今回対象外の人にチェック。④ 回す → 当選者名をPR表のレビュアー欄に記入。<br>
+       メンバーの恒久的な追加・削除は、埋め込みURLの <code>?m=名前1,名前2,…</code> を書き換えてください。</p>
+  </details>
+
+  <div class="step">
+    <div class="step-h"><span class="step-n">1</span><span class="step-t">PR表を貼り付け</span>
+      <span class="cap">貼り付けなしでも全員負荷0で抽選できます</span></div>
+    <textarea id="paste" rows="4" placeholder="ここにPR表を貼り付け（PR / 作成者 / レビュアー / status）"></textarea>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+      <button id="load">読み込み</button>
+      <span id="summary" class="cap">未読み込み</span>
+    </div>
+    <div id="unknown"></div>
+  </div>
+
+  <div class="step">
+    <div class="step-h"><span class="step-n">2</span><span class="step-t">PRを選ぶ</span>
+      <span class="cap">Ready for review かつレビュアー未記入のPRのみ</span></div>
+    <select id="prsel" aria-label="対象PRの選択"></select>
+  </div>
+
+  <div class="step">
+    <div class="step-h"><span class="step-n">3</span><span class="step-t">除外する人にチェック</span>
+      <span class="cap">作成者は自動除外・変更不可</span></div>
+    <div id="members"></div>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <input type="text" id="addname" placeholder="当日限りのメンバー追加" style="flex:1">
+      <button id="addbtn">追加</button>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-h"><span class="step-n">4</span><span class="step-t">ルーレット</span>
+      <span class="cap">扇の大きさ＝当選確率</span></div>
+    <div class="wheel-wrap">
+      <div class="pointer"></div>
+      <div class="wheel-rot" id="rot"><svg id="wheel" viewBox="0 0 240 240" width="100%" aria-label="抽選ルーレット"></svg></div>
+    </div>
+    <button id="spin" class="primary" style="width:100%;margin-top:10px;height:42px">回す</button>
+    <div id="result" class="result">結果はここに表示されます</div>
+    <div id="hist" class="hist"></div>
+  </div>
+
+  <footer>このページはデータを外部に送信・保存しません（ブラウザ内でのみ動作）。貼り直すと表の内容で負荷を再集計します。</footer>
+</div>
+
+<script>
+"use strict";
+
+/* ===== CORE-START ===== */
+// PR表（タブ区切りテキスト）を行の配列に解析する。ヘッダ行・空行・列不足の行は捨てる
+function parsePRTable(text){
+  const rows = [];
+  for (const raw of String(text || "").split(/\r?\n/)){
+    const line = raw.replace(/\u00a0/g, " "); // NBSP（Notionコピーで混入し得る）を通常スペースへ正規化
+    if (!line.trim()) continue;
+    if (/作成者/.test(line) && /レビュアー/.test(line)) continue; // ヘッダ行
+    const cells = line.includes("\t") ? line.split("\t") : line.split(/ {2,}/); // タブ優先、無ければ連続空白
+    if (cells.length < 2) continue;
+    const c = cells.map(s => s.trim());
+    rows.push({ title: c[0] || "", author: c[1] || "", reviewer: c[2] || "", status: c[3] || "" });
+  }
+  return rows;
+}
+
+// レビュアーセルの複数名を分割（「、」「,」「/」「スペース」対応）
+function splitReviewers(cell){
+  return String(cell || "").split(/[、,\/\s]+/).map(s => s.trim()).filter(Boolean);
+}
+
+// アサイン対象条件: status が Ready for review（大小文字・空白の揺れ許容）
+function isReadyForReview(status){
+  return /ready\s*for\s*review/i.test(String(status || ""));
+}
+
+// 解析済み行から負荷・未割当PR・メンバー外の名前を集計する
+function computeState(rows, memberNames){
+  const loads = {};
+  memberNames.forEach(n => { loads[n] = 0; });
+  const unknown = new Set();
+  rows.forEach(r => {
+    splitReviewers(r.reviewer).forEach(nm => {
+      if (nm in loads) loads[nm]++; else unknown.add(nm);
+    });
+  });
+  const unassigned = rows
+    .filter(r => !r.reviewer && isReadyForReview(r.status))
+    .map(r => ({ title: r.title, author: r.author }));
+  return { loads, unassigned, unknown: [...unknown] };
+}
+
+// 負荷の配列 → 確率の配列（w = 1/(負荷+1) を正規化）
+function probsFor(loads){
+  const w = loads.map(l => 1 / (l + 1));
+  const s = w.reduce((a, b) => a + b, 0);
+  return w.map(x => x / s);
+}
+
+// 累積分布で当選インデックスを決める（rnd は [0,1)）
+function pickIndex(probs, rnd){
+  let acc = 0;
+  for (let i = 0; i < probs.length; i++){
+    acc += probs[i];
+    if (rnd < acc) return i;
+  }
+  return probs.length - 1;
+}
+/* ===== CORE-END ===== */
+
+// ---------- 状態 ----------
+const PALETTE = ["#185FA5","#0F6E56","#993C1D","#534AB7","#854F0B","#993556","#639922","#A32D2D","#5F5E5A"];
+const params = new URLSearchParams(location.search);
+const initialNames = [...new Set((params.get("m") || "").split(/[,、]/).map(s => s.trim()).filter(Boolean))];
+let members = initialNames.map(n => ({ name: n, load: 0, ex: false }));
+let prs = [];          // [{title, author, done}]
+let selIdx = -1;
+let history = [];
+let spinning = false;
+let rot = 0;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+function currentAuthor(){ return (selIdx >= 0 && prs[selIdx] && !prs[selIdx].done) ? prs[selIdx].author : null; }
+function candidates(){ const a = currentAuthor(); return members.filter(m => !m.ex && m.name !== a); }
+function colorOf(name){
+  const i = members.findIndex(m => m.name === name);
+  return PALETTE[(i < 0 ? 0 : i) % PALETTE.length];
+}
+function rand(){
+  if (window.crypto && crypto.getRandomValues){
+    return crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
+  }
+  return Math.random();
+}
+
+// ---------- 読み込み ----------
+function loadPaste(){
+  const rows = parsePRTable($("paste").value);
+  if (!rows.length){
+    $("summary").textContent = "解析できませんでした。Notionの表をそのままコピーして貼り付けてください";
+    return;
+  }
+  const names = members.map(m => m.name);
+  const st = computeState(rows, names);
+  members.forEach(m => { m.load = st.loads[m.name] || 0; });
+  prs = st.unassigned.map((p, i) => ({ title: p.title || ("PR#" + (i + 1)), author: p.author, done: false }));
+  selIdx = prs.length ? 0 : -1;
+  $("summary").textContent = "メンバー" + members.length + "名 / 対象PR（Ready for review・未割当）" + prs.length + "件";
+  const uk = $("unknown");
+  uk.innerHTML = st.unknown.length
+    ? '<div class="warn">メンバー外の名前がレビュアー欄にあります: ' +
+      st.unknown.map(n => '<button class="chip" data-add="' + esc(n) + '">＋ ' + esc(n) + ' を追加</button>').join(" ") + "</div>"
+    : "";
+  uk.querySelectorAll("[data-add]").forEach(b => {
+    b.onclick = () => { addMember(b.dataset.add); loadPaste(); };
+  });
+  renderAll();
+}
+
+function addMember(name){
+  const n = String(name || "").trim();
+  if (!n || members.some(m => m.name === n)) return;
+  members.push({ name: n, load: 0, ex: false });
+  renderAll();
+}
+
+// ---------- 描画 ----------
+function renderPRSelect(){
+  const s = $("prsel");
+  s.innerHTML = "";
+  if (!prs.length){
+    const o = document.createElement("option");
+    o.textContent = members.length
+      ? "（PR表未読み込み — このまま全員を対象に抽選できます）"
+      : "（PR表未読み込み）";
+    s.appendChild(o);
+    s.disabled = true;
+    return;
+  }
+  s.disabled = false;
+  prs.forEach((p, i) => {
+    const o = document.createElement("option");
+    o.value = i;
+    const inMember = members.some(m => m.name === p.author);
+    o.textContent = (p.done ? "[済] " : "") + p.title + "（作成者: " + p.author + (inMember ? "" : "・メンバー外") + "）";
+    if (i === selIdx) o.selected = true;
+    s.appendChild(o);
+  });
+}
+
+function renderMembers(){
+  const cs = candidates();
+  const pr = cs.length ? probsFor(cs.map(m => m.load)) : [];
+  const box = $("members");
+  box.innerHTML = "";
+  if (!members.length){
+    box.innerHTML = '<div class="cap">メンバーがいません。URLに <code>?m=名前1,名前2,…</code> を付けるか、下の欄から追加してください。</div>';
+    return;
+  }
+  members.forEach(m => {
+    const isAuthor = m.name === currentAuthor();
+    const ci = cs.indexOf(m);
+    const row = document.createElement("label");
+    row.className = "member";
+    if (isAuthor || m.ex) row.style.opacity = ".55";
+    row.innerHTML =
+      '<input type="checkbox" ' + (isAuthor ? "checked disabled" : (m.ex ? "checked" : "")) + ' data-name="' + esc(m.name) + '">' +
+      '<span class="dot" style="background:' + colorOf(m.name) + '"></span>' +
+      '<span style="flex:1">' + esc(m.name) + (isAuthor ? ' <span class="cap">(作成者)</span>' : "") + "</span>" +
+      (ci >= 0 ? '<span class="cap">' + Math.round(pr[ci] * 100) + "%</span>" : "") +
+      '<span class="badge">負荷 ' + m.load + "</span>";
+    box.appendChild(row);
+  });
+  box.querySelectorAll("input[type=checkbox]:not([disabled])").forEach(cb => {
+    cb.onchange = () => {
+      const m = members.find(x => x.name === cb.dataset.name);
+      if (m){ m.ex = cb.checked; renderAll(); }
+    };
+  });
+}
+
+function polar(deg, r){
+  const a = (-90 + deg) * Math.PI / 180;
+  return [120 + r * Math.cos(a), 120 + r * Math.sin(a)];
+}
+
+function renderWheel(){
+  const cs = candidates();
+  const svg = $("wheel");
+  if (!cs.length){
+    svg.innerHTML = '<circle cx="120" cy="120" r="110" fill="none" stroke="var(--line)" stroke-width="2"/>' +
+      '<text x="120" y="125" text-anchor="middle" fill="var(--sub)" font-size="13">候補がいません</text>';
+    $("spin").disabled = true;
+    return;
+  }
+  $("spin").disabled = spinning;
+  if (cs.length === 1){
+    svg.innerHTML = '<circle cx="120" cy="120" r="110" fill="' + colorOf(cs[0].name) + '"/>' +
+      '<text x="120" y="116" text-anchor="middle" fill="#fff" font-size="16" font-weight="600">' + esc(cs[0].name) + "</text>" +
+      '<text x="120" y="136" text-anchor="middle" fill="#fff" font-size="11">100%（即決）</text>';
+    return;
+  }
+  const pr = probsFor(cs.map(m => m.load));
+  let s = "", ang = 0;
+  cs.forEach((m, i) => {
+    const sweep = pr[i] * 360, a0 = ang, a1 = ang + sweep, mid = (a0 + a1) / 2;
+    const p0 = polar(a0, 110), p1 = polar(a1, 110), large = sweep > 180 ? 1 : 0;
+    s += '<path d="M120 120 L' + p0[0].toFixed(1) + " " + p0[1].toFixed(1) +
+         " A110 110 0 " + large + " 1 " + p1[0].toFixed(1) + " " + p1[1].toFixed(1) +
+         ' Z" fill="' + colorOf(m.name) + '" stroke="var(--card)" stroke-width="2"/>';
+    const lp = polar(mid, 72);
+    s += '<text x="' + lp[0].toFixed(1) + '" y="' + (lp[1] - 2).toFixed(1) + '" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">' + esc(m.name) + "</text>";
+    s += '<text x="' + lp[0].toFixed(1) + '" y="' + (lp[1] + 11).toFixed(1) + '" text-anchor="middle" fill="#fff" font-size="10" opacity=".92">' + Math.round(pr[i] * 100) + "%</text>";
+    ang = a1;
+  });
+  s += '<circle cx="120" cy="120" r="24" fill="var(--card)" stroke="var(--line)"/>' +
+       '<text x="120" y="125" text-anchor="middle" fill="var(--sub)" font-size="11">' + cs.length + "人</text>";
+  svg.innerHTML = s;
+}
+
+function renderAll(){ renderPRSelect(); renderMembers(); renderWheel(); }
+
+// ---------- 抽選 ----------
+function finish(winnerName){
+  const m = members.find(x => x.name === winnerName);
+  if (m) m.load++; // セッション内で負荷+1（次の抽選に反映）
+  let prLabel = "";
+  if (selIdx >= 0 && prs[selIdx] && !prs[selIdx].done){
+    prs[selIdx].done = true;
+    prLabel = prs[selIdx].title;
+    const next = prs.findIndex(p => !p.done);
+    selIdx = next;
+  }
+  history.unshift((prLabel ? prLabel + " → " : "") + winnerName);
+  $("result").innerHTML =
+    '<span>レビュアー → <strong>' + esc(winnerName) + "</strong></span>" +
+    '<button id="copy" data-name="' + esc(winnerName) + '">名前をコピー</button>' +
+    '<span class="cap">PR表のレビュアー欄に記入してください</span>';
+  $("hist").innerHTML = history.map(h => "決定: " + esc(h)).join("<br>");
+  const cp = $("copy");
+  cp.onclick = () => {
+    const t = cp.dataset.name;
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(
+        () => { cp.textContent = "コピーしました"; },
+        () => { cp.textContent = "コピー不可（手で入力してください）"; }
+      );
+    } else {
+      cp.textContent = "コピー不可（手で入力してください）";
+    }
+  };
+  renderAll();
+}
+
+function spin(){
+  if (spinning) return;
+  const cs = candidates();
+  if (!cs.length){ $("result").textContent = "候補がいません（除外を見直してください）"; return; }
+  if (cs.length === 1){ finish(cs[0].name); return; }
+  spinning = true;
+  $("spin").disabled = true;
+  const pr = probsFor(cs.map(m => m.load));
+  const wi = pickIndex(pr, rand());
+  // 当選者の扇の中央が上（ポインタ位置）に来る角度まで回す
+  let before = 0;
+  for (let j = 0; j < wi; j++) before += pr[j] * 360;
+  const mid = before + pr[wi] * 360 / 2;
+  const cur = ((rot % 360) + 360) % 360;
+  const need = ((-mid - cur) % 360 + 360) % 360;
+  rot += 5 * 360 + need;
+  $("rot").style.transform = "rotate(" + rot + "deg)";
+  const winner = cs[wi].name;
+  setTimeout(() => {
+    const el = $("rot");
+    el.style.transition = "none";           // 蓄積した回転角をリセットしても見た目が飛ばないように
+    finish(winner);
+    requestAnimationFrame(() => { el.style.transition = ""; });
+    spinning = false;
+    renderWheel();
+  }, 4100);
+}
+
+// ---------- イベント ----------
+$("load").onclick = loadPaste;
+$("prsel").onchange = e => { selIdx = parseInt(e.target.value, 10); if (Number.isNaN(selIdx)) selIdx = -1; renderAll(); };
+$("addbtn").onclick = () => { addMember($("addname").value); $("addname").value = ""; };
+$("addname").addEventListener("keydown", e => { if (e.key === "Enter") $("addbtn").click(); });
+$("spin").onclick = spin;
+renderAll();
+</script>
+</body>
+</html>
