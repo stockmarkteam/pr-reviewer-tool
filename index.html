@@ -58,7 +58,7 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
 </head>
 <body>
 <div class="wrap">
-  <h1>PRレビュアールーレット <small>負荷が少ない人ほど当たりやすい抽選</small></h1>
+  <h1>PRレビュアールーレット <small>負荷が少ない人ほど当たりやすい抽選</small> <span id="syncst" class="cap"></span></h1>
   <details>
     <summary>使い方（クリックで開く）</summary>
     <p>① NotionのPR表を範囲選択してコピーし、下の欄に貼り付けて「読み込み」（会議冒頭に1回）。<br>
@@ -106,7 +106,7 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
     <div id="hist" class="hist"></div>
   </div>
 
-  <footer>このページはデータを外部に送信・保存しません（ブラウザ内でのみ動作）。貼り直すと表の内容で負荷を再集計します。</footer>
+  <footer>このページはデータを保存しません。貼り直すと表の内容で負荷を再集計します。URLに <code>ch</code>（同期チャンネル）を設定した場合のみ、端末間で暗号化した状態を中継サーバー（ntfy.sh）経由で共有します（名前・PR名は暗号化され、サーバーでは読めません）。未設定時は外部送信ゼロです。</footer>
 </div>
 
 <script>
@@ -218,7 +218,7 @@ function loadPaste(){
       st.unknown.map(n => '<button class="chip" data-add="' + esc(n) + '">＋ ' + esc(n) + ' を追加</button>').join(" ") + "</div>"
     : "";
   uk.querySelectorAll("[data-add]").forEach(b => {
-    b.onclick = () => { addMember(b.dataset.add); loadPaste(); };
+    b.onclick = () => { addMember(b.dataset.add); loadPaste(); broadcastState(); };
   });
   renderAll();
 }
@@ -280,7 +280,7 @@ function renderMembers(){
   box.querySelectorAll("input[type=checkbox]:not([disabled])").forEach(cb => {
     cb.onchange = () => {
       const m = members.find(x => x.name === cb.dataset.name);
-      if (m){ m.ex = cb.checked; renderAll(); }
+      if (m){ m.ex = cb.checked; renderAll(); broadcastState(); }
     };
   });
 }
@@ -358,15 +358,14 @@ function finish(winnerName){
   renderAll();
 }
 
-function spin(){
-  if (spinning) return;
+// 指定した当選者に向けて回転演出を行う（ローカル抽選・リモート受信の両方から使う）
+function startSpin(winnerName){
   const cs = candidates();
-  if (!cs.length){ $("result").textContent = "候補がいません（除外を見直してください）"; return; }
-  if (cs.length === 1){ finish(cs[0].name); return; }
+  const wi = cs.findIndex(m => m.name === winnerName);
+  if (wi < 0 || cs.length <= 1){ finish(winnerName); return; } // 状態ずれ・候補1人は即決
   spinning = true;
   $("spin").disabled = true;
   const pr = probsFor(cs.map(m => m.load));
-  const wi = pickIndex(pr, rand());
   // 当選者の扇の中央が上（ポインタ位置）に来る角度まで回す
   let before = 0;
   for (let j = 0; j < wi; j++) before += pr[j] * 360;
@@ -375,24 +374,112 @@ function spin(){
   const need = ((-mid - cur) % 360 + 360) % 360;
   rot += 5 * 360 + need;
   $("rot").style.transform = "rotate(" + rot + "deg)";
-  const winner = cs[wi].name;
   setTimeout(() => {
     const el = $("rot");
     el.style.transition = "none";           // 蓄積した回転角をリセットしても見た目が飛ばないように
-    finish(winner);
+    finish(winnerName);
     requestAnimationFrame(() => { el.style.transition = ""; });
     spinning = false;
     renderWheel();
   }, 4100);
 }
 
+function spin(){
+  if (spinning) return;
+  const cs = candidates();
+  if (!cs.length){ $("result").textContent = "候補がいません（除外を見直してください）"; return; }
+  const winner = cs.length === 1 ? cs[0].name
+                                 : cs[pickIndex(probsFor(cs.map(m => m.load)), rand())].name;
+  broadcast("spin", { winner });               // 全員の画面で同じ回転を開始させる
+  startSpin(winner);
+  setTimeout(broadcastState, 4400);            // 演出完了後の状態を配信（途中参加者の追従用）
+}
+
 // ---------- イベント ----------
-$("load").onclick = loadPaste;
-$("prsel").onchange = e => { selIdx = parseInt(e.target.value, 10); if (Number.isNaN(selIdx)) selIdx = -1; renderAll(); };
-$("addbtn").onclick = () => { addMember($("addname").value); $("addname").value = ""; };
+$("load").onclick = () => { loadPaste(); broadcastState(); };
+$("prsel").onchange = e => { selIdx = parseInt(e.target.value, 10); if (Number.isNaN(selIdx)) selIdx = -1; renderAll(); broadcastState(); };
+$("addbtn").onclick = () => { addMember($("addname").value); $("addname").value = ""; broadcastState(); };
 $("addname").addEventListener("keydown", e => { if (e.key === "Enter") $("addbtn").click(); });
 $("spin").onclick = spin;
 renderAll();
+
+// ---------- マルチ画面同期（URLに ?ch= がある時のみ有効） ----------
+// 仕組み: チャンネル文字列からトピック名とAES-GCM鍵を導出し、状態をE2E暗号化して
+// ntfy.sh（公開Pub/Subリレー）で中継する。リレーには暗号文しか流れない。
+// リレー不通時は従来どおり単独で動作する（機能劣化なし）。
+const chSecret = params.get("ch");
+let sync = null;
+
+function setSyncStatus(t){ $("syncst").textContent = t; }
+function b64(buf){
+  let s = ""; const u = new Uint8Array(buf);
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function unb64(str){
+  const bin = atob(str); const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+function serializeState(){
+  return { m: members.map(x => ({ n: x.name, l: x.load, e: x.ex ? 1 : 0 })),
+           p: prs.map(x => ({ t: String(x.title).slice(0, 120), a: x.author, d: x.done ? 1 : 0 })),
+           s: selIdx, h: history.slice(0, 10), y: $("summary").textContent };
+}
+function applyState(st){
+  members = st.m.map(x => ({ name: x.n, load: x.l, ex: !!x.e }));
+  prs = st.p.map(x => ({ title: x.t, author: x.a, done: !!x.d }));
+  selIdx = st.s; history = st.h || [];
+  $("summary").textContent = st.y || "";
+  $("hist").innerHTML = history.map(h => "決定: " + esc(h)).join("<br>");
+  renderAll();
+}
+async function encryptJSON(obj){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sync.key, new TextEncoder().encode(JSON.stringify(obj)));
+  const out = new Uint8Array(12 + ct.byteLength); out.set(iv); out.set(new Uint8Array(ct), 12);
+  return b64(out.buffer);
+}
+async function decryptJSON(b){
+  try {
+    const u = unb64(b);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(0, 12) }, sync.key, u.slice(12));
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch (e){ return null; }
+}
+async function broadcast(action, extra){
+  if (!sync) return;
+  try {
+    const body = await encryptJSON(Object.assign({ id: sync.id, action, state: serializeState() }, extra || {}));
+    fetch("https://ntfy.sh/" + sync.topic, { method: "POST", body, headers: { "Cache": "no" } }).catch(() => {});
+  } catch (e){}
+}
+function broadcastState(){ broadcast("state"); }
+async function initSync(){
+  if (!chSecret) return;
+  if (!(window.crypto && crypto.subtle)){ setSyncStatus("同期: 非対応ブラウザ（単独モード）"); return; }
+  const enc = new TextEncoder();
+  const th = await crypto.subtle.digest("SHA-256", enc.encode("prr-topic:" + chSecret));
+  const kh = await crypto.subtle.digest("SHA-256", enc.encode("prr-key:" + chSecret));
+  const topic = "prr-" + Array.from(new Uint8Array(th)).slice(0, 16).map(b => b.toString(16).padStart(2, "0")).join("");
+  const key = await crypto.subtle.importKey("raw", kh, "AES-GCM", false, ["encrypt", "decrypt"]);
+  sync = { topic, key, id: Math.random().toString(36).slice(2, 10) };
+  setSyncStatus("同期: 接続中…");
+  const es = new EventSource("https://ntfy.sh/" + topic + "/sse");
+  es.onopen = () => setSyncStatus("同期: オン");
+  es.onerror = () => setSyncStatus("同期: 再接続中…（単独でも操作可）");
+  es.onmessage = async ev => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.event && d.event !== "message") return;  // keepalive等は無視
+      const p = await decryptJSON(d.message);
+      if (!p || p.id === sync.id) return;            // 自分の送信のエコーは無視
+      if (p.action === "spin" && p.winner){ applyState(p.state); startSpin(p.winner); }
+      else applyState(p.state);
+    } catch (e){}
+  };
+}
+initSync();
 </script>
 </body>
 </html>
