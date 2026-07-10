@@ -73,6 +73,7 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
     <textarea id="paste" rows="4" placeholder="ここにPR表を貼り付け（PR / 作成者 / レビュアー / status）"></textarea>
     <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
       <button id="load">読み込み</button>
+      <button id="resetbtn" title="貼り付け・負荷・履歴を初期状態に戻す">リセット</button>
       <span id="summary" class="cap">未読み込み</span>
     </div>
     <div id="unknown"></div>
@@ -401,6 +402,19 @@ $("prsel").onchange = e => { selIdx = parseInt(e.target.value, 10); if (Number.i
 $("addbtn").onclick = () => { addMember($("addname").value); $("addname").value = ""; broadcastState(); };
 $("addname").addEventListener("keydown", e => { if (e.key === "Enter") $("addbtn").click(); });
 $("spin").onclick = spin;
+
+// 全てを初期状態（URLのメンバー・負荷0・貼り付けなし）に戻す
+function resetAll(){
+  members = initialNames.map(n => ({ name: n, load: 0, ex: false }));
+  prs = []; selIdx = -1; history = [];
+  $("paste").value = "";
+  $("summary").textContent = "未読み込み";
+  $("unknown").innerHTML = "";
+  $("result").textContent = "結果はここに表示されます";
+  $("hist").innerHTML = "";
+  renderAll();
+}
+$("resetbtn").onclick = () => { resetAll(); broadcast("reset"); };
 renderAll();
 
 // ---------- マルチ画面同期（URLに ?ch= がある時のみ有効） ----------
@@ -450,8 +464,8 @@ async function decryptJSON(b){
 async function broadcast(action, extra){
   if (!sync) return;
   try {
-    const body = await encryptJSON(Object.assign({ id: sync.id, action, state: serializeState() }, extra || {}));
-    fetch("https://ntfy.sh/" + sync.topic, { method: "POST", body, headers: { "Cache": "no" } }).catch(() => {});
+    const body = await encryptJSON(Object.assign({ id: sync.id, t: Date.now(), action, state: serializeState() }, extra || {}));
+    fetch("https://ntfy.sh/" + sync.topic + "?cache=no", { method: "POST", body, headers: { "Cache": "no" } }).catch(() => {});
   } catch (e){}
 }
 function broadcastState(){ broadcast("state"); }
@@ -463,7 +477,7 @@ async function initSync(){
   const kh = await crypto.subtle.digest("SHA-256", enc.encode("prr-key:" + chSecret));
   const topic = "prr-" + Array.from(new Uint8Array(th)).slice(0, 16).map(b => b.toString(16).padStart(2, "0")).join("");
   const key = await crypto.subtle.importKey("raw", kh, "AES-GCM", false, ["encrypt", "decrypt"]);
-  sync = { topic, key, id: Math.random().toString(36).slice(2, 10) };
+  sync = { topic, key, id: Math.random().toString(36).slice(2, 10), lastT: {} };
   setSyncStatus("同期: 接続中…");
   const es = new EventSource("https://ntfy.sh/" + topic + "/sse");
   es.onopen = () => setSyncStatus("同期: オン");
@@ -474,7 +488,19 @@ async function initSync(){
       if (d.event && d.event !== "message") return;  // keepalive等は無視
       const p = await decryptJSON(d.message);
       if (!p || p.id === sync.id) return;            // 自分の送信のエコーは無視
-      if (p.action === "spin" && p.winner){ applyState(p.state); startSpin(p.winner); }
+      if (p.t){                                      // 送信者ごとの単調増加チェック（再配信・順序乱れを破棄）
+        if (p.t <= (sync.lastT[p.id] || 0)) return;
+        sync.lastT[p.id] = p.t;
+      }
+      if (p.action === "reset"){ resetAll(); return; }
+      if (p.action === "spin" && p.winner){
+        applyState(p.state);
+        // 非表示タブ（Notionの別ページに滞留中のiframe等）や5秒以上前の抽選は、
+        // 演出なしで結果だけ確定させる（表示に戻った時に回転が再生されて
+        // 「もう一度回った」ように見える問題への対策）
+        if (document.hidden || !p.t || Date.now() - p.t > 5000) finish(p.winner);
+        else startSpin(p.winner);
+      }
       else applyState(p.state);
     } catch (e){}
   };
