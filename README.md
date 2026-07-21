@@ -9,7 +9,7 @@ PR レビュアーを抽選で決めるツールです。**負荷（担当中の
 ## 全体像
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph repo["📦 このリポジトリ（stockmarkteam/pr-reviewer-tool）"]
         H["index.html"]
     end
