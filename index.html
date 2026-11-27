@@ -61,16 +61,16 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
   <h1>PRレビュアールーレット <small>負荷が少ない人ほど当たりやすい抽選</small> <span id="syncst" class="cap"></span></h1>
   <details>
     <summary>使い方（クリックで開く）</summary>
-    <p>① NotionのPR表を範囲選択してコピーし、下の欄に貼り付けて「読み込み」（会議冒頭に1回）。<br>
-       ② 「Ready for review」でレビュアー未記入のPRが一覧に出るので1件選ぶ（作成者は自動で除外）。<br>
-       ③ 休暇の人・今回対象外の人にチェック。④ 回す → 当選者名をPR表のレビュアー欄に記入。<br>
+    <p>① 全体TODOページの「unstructured PR 管理DB」の表で、PR 列の一番上のセルをクリック → 一番下の行の status 列（またはそれより右）のセルを Shift+クリックしてセルを選択 → Cmd+C（Windows は Ctrl+C）でコピーし、下の欄に貼り付けて「読み込み」（会議冒頭に1回）。行の左端のチェックボックスで選ぶと PR 名しかコピーされないので使わないでください。<br>
+       ② 「ready-for-review」でレビュアー未記入のPRが一覧に出るので1件選ぶ（作成者は自動で除外）。merged・closed のPRは負荷に数えません。<br>
+       ③ 休暇の人・今回対象外の人にチェック。④ 回す → 当選者名をDBのレビュアー欄に記入。<br>
        メンバーの恒久的な追加・削除は、埋め込みURLの <code>?m=名前1,名前2,…</code> を書き換えてください。</p>
   </details>
 
   <div class="step">
-    <div class="step-h"><span class="step-n">1</span><span class="step-t">PR表を貼り付け</span>
+    <div class="step-h"><span class="step-n">1</span><span class="step-t">PR管理DBを貼り付け</span>
       <span class="cap">貼り付けなしでも全員負荷0で抽選できます</span></div>
-    <textarea id="paste" rows="4" placeholder="ここにPR表を貼り付け（PR / 作成者 / レビュアー / status）"></textarea>
+    <textarea id="paste" rows="4" placeholder="Notionの PR 管理DB の表のセル（PR 列〜status 列、全行）を選択してコピーし、ここに貼り付け"></textarea>
     <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
       <button id="load">読み込み</button>
       <button id="resetbtn" title="貼り付け・負荷・履歴を初期状態に戻す">リセット</button>
@@ -81,7 +81,7 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
 
   <div class="step">
     <div class="step-h"><span class="step-n">2</span><span class="step-t">PRを選ぶ</span>
-      <span class="cap">Ready for review かつレビュアー未記入のPRのみ</span></div>
+      <span class="cap">ready-for-review かつレビュアー未記入のPRのみ</span></div>
     <select id="prsel" aria-label="対象PRの選択"></select>
   </div>
 
@@ -114,17 +114,40 @@ details p{ font-size:12px; color:var(--sub); margin:6px 0 0 }
 "use strict";
 
 /* ===== CORE-START ===== */
-// PR表（タブ区切りテキスト）を行の配列に解析する。ヘッダ行・空行・列不足の行は捨てる
+// 1 行を列に分割する。タブ区切り優先、Markdown の表（| 区切り）、無ければ 2 個以上の連続空白
+function splitCells(line){
+  const t = line.trim();
+  if (t.startsWith("|")) return t.replace(/^\||\|$/g, "").split("|");
+  return line.includes("\t") ? line.split("\t") : line.split(/ {2,}/);
+}
+
+// 見出し行から各列の位置を決める。PR 列の名前が違うときは先頭列を PR とみなす。
+// status 列が無い見出しなら status は空として扱う（別の列を status と取り違えない）
+function columnsFromHeader(cells){
+  const find = re => cells.findIndex(c => re.test(c));
+  const title = find(/^(PR|タイトル|名前|Name)$/i);
+  return {
+    title: title >= 0 ? title : 0,
+    author: find(/作成者/),
+    reviewer: find(/レビュアー/),
+    status: find(/^(status|ステータス)$/i),
+  };
+}
+
+// PR表（Notion の PR 管理DB の表ビューをコピーしたテキスト）を行の配列に解析する。
+// 見出し行があれば列名で列を判定し、空行・列不足の行・Markdown の区切り行は捨てる
 function parsePRTable(text){
   const rows = [];
+  let col = { title: 0, author: 1, reviewer: 2, status: 3 };
   for (const raw of String(text || "").split(/\r?\n/)){
     const line = raw.replace(/\u00a0/g, " "); // NBSP（Notionコピーで混入し得る）を通常スペースへ正規化
     if (!line.trim()) continue;
-    if (/作成者/.test(line) && /レビュアー/.test(line)) continue; // ヘッダ行
-    const cells = line.includes("\t") ? line.split("\t") : line.split(/ {2,}/); // タブ優先、無ければ連続空白
-    if (cells.length < 2) continue;
-    const c = cells.map(s => s.trim());
-    rows.push({ title: c[0] || "", author: c[1] || "", reviewer: c[2] || "", status: c[3] || "" });
+    if (/^\s*\|?\s*:?-{3,}/.test(line)) continue; // Markdown の表の区切り行
+    const c = splitCells(line).map(s => s.trim());
+    if (c.includes("作成者") && c.includes("レビュアー")){ col = columnsFromHeader(c); continue; } // 見出し行
+    if (c.length < 2) continue;
+    const at = i => (i >= 0 && c[i]) || "";
+    rows.push({ title: at(col.title), author: at(col.author), reviewer: at(col.reviewer), status: at(col.status) });
   }
   return rows;
 }
@@ -134,9 +157,15 @@ function splitReviewers(cell){
   return String(cell || "").split(/[、,\/\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
-// アサイン対象条件: status が Ready for review（大小文字・空白の揺れ許容）
+// アサイン対象条件: status が Ready for review（大小文字・空白・ハイフン・アンダースコアの揺れ許容。
+// PR 管理DB のラベル名「ready-for-review（レビュー待ち）」も一致する）
 function isReadyForReview(status){
-  return /ready\s*for\s*review/i.test(String(status || ""));
+  return /ready[\s\-_]*for[\s\-_]*review/i.test(String(status || ""));
+}
+
+// 終わった PR（merged / closed）か。PR 管理DB では終わった行も残るため、負荷と対象から外す
+function isFinished(status){
+  return /\b(merged|closed)\b/i.test(String(status || ""));
 }
 
 // 解析済み行から負荷・未割当PR・メンバー外の名前を集計する
@@ -144,12 +173,13 @@ function computeState(rows, memberNames){
   const loads = {};
   memberNames.forEach(n => { loads[n] = 0; });
   const unknown = new Set();
-  rows.forEach(r => {
+  const active = rows.filter(r => !isFinished(r.status));
+  active.forEach(r => {
     splitReviewers(r.reviewer).forEach(nm => {
       if (nm in loads) loads[nm]++; else unknown.add(nm);
     });
   });
-  const unassigned = rows
+  const unassigned = active
     .filter(r => !r.reviewer && isReadyForReview(r.status))
     .map(r => ({ title: r.title, author: r.author }));
   return { loads, unassigned, unknown: [...unknown] };
@@ -204,7 +234,7 @@ function rand(){
 function loadPaste(){
   const rows = parsePRTable($("paste").value);
   if (!rows.length){
-    $("summary").textContent = "解析できませんでした。Notionの表をそのままコピーして貼り付けてください";
+    $("summary").textContent = "作成者・レビュアー・status の列を読み取れませんでした。行を選択（左端のチェックボックス）してコピーすると PR 名しか入りません。表のセルを PR 列から status 列まで選択してコピーしてください";
     return;
   }
   const names = members.map(m => m.name);
@@ -212,7 +242,7 @@ function loadPaste(){
   members.forEach(m => { m.load = st.loads[m.name] || 0; });
   prs = st.unassigned.map((p, i) => ({ title: p.title || ("PR#" + (i + 1)), author: p.author, done: false }));
   selIdx = prs.length ? 0 : -1;
-  $("summary").textContent = "メンバー" + members.length + "名 / 対象PR（Ready for review・未割当）" + prs.length + "件";
+  $("summary").textContent = "メンバー" + members.length + "名 / 対象PR（ready-for-review・未割当）" + prs.length + "件";
   const uk = $("unknown");
   uk.innerHTML = st.unknown.length
     ? '<div class="warn">メンバー外の名前がレビュアー欄にあります: ' +
@@ -238,8 +268,8 @@ function renderPRSelect(){
   if (!prs.length){
     const o = document.createElement("option");
     o.textContent = members.length
-      ? "（PR表未読み込み — このまま全員を対象に抽選できます）"
-      : "（PR表未読み込み）";
+      ? "（PR管理DB未読み込み — このまま全員を対象に抽選できます）"
+      : "（PR管理DB未読み込み）";
     s.appendChild(o);
     s.disabled = true;
     return;
@@ -342,7 +372,7 @@ function finish(winnerName){
   $("result").innerHTML =
     '<span>レビュアー → <strong>' + esc(winnerName) + "</strong></span>" +
     '<button id="copy" data-name="' + esc(winnerName) + '">名前をコピー</button>' +
-    '<span class="cap">PR表のレビュアー欄に記入してください</span>';
+    '<span class="cap">PR管理DBのレビュアー欄に記入してください</span>';
   $("hist").innerHTML = history.map(h => "決定: " + esc(h)).join("<br>");
   const cp = $("copy");
   cp.onclick = () => {
